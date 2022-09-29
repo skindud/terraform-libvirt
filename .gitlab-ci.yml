@@ -1,0 +1,80 @@
+default:
+  tags:
+    - docker
+  image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+variables:
+  TF_ENV: 'k1'
+stages:
+  - plan
+  - apply
+  - destroy
+
+.terraform_before_template:
+  - export https_proxy="***:3128"
+  - export http_proxy="***:3128"
+  - cd infra/${TF_ENV}
+  - terraform --version
+  - terraform init
+  - mkdir -p ~/.ssh
+  - echo "$ANSIBLE_SSHKEY" > ~/.ssh/id_rsa
+  - chmod 600 ~/.ssh/id_rsa
+  - echo -e "Host *\n\tStrictHostKeyChecking no\n      SendEnv CI_*  \n" > ~/.ssh/config
+  - ssh ansible@*** pwd
+
+.terraform_after_template: unset https_proxy
+
+p:plan:
+  stage: plan
+  before_script:
+    - !reference [.terraform_before_template]
+  script:
+    - terraform validate
+    - terraform plan -out "plan"
+    - ls -la && pwd
+    # - echo ${CI_PIPELINE_URL} && exit 1
+  artifacts:
+    paths:
+      - infra/${TF_ENV}/plan
+  after_script:
+    - !reference [.terraform_after_template]
+
+a:apply:
+  stage: apply
+  before_script:
+    - !reference [.terraform_before_template]
+  environment:
+    name: env/$CI_COMMIT_REF_SLUG
+    url: https://$STAND_URL
+    on_stop: d:destroy
+    auto_stop_in: 1 hour
+  script:
+    - ls -l ${CI_PROJECT_DIR}
+    - apk add cdrkit
+    - which mkisofs
+    - terraform apply --auto-approve "plan"
+  artifacts:
+    paths:
+      - infra/${TF_ENV}/terraform.tfstate
+  after_script:
+    - !reference [.terraform_after_template]
+  dependencies:
+    - p:plan
+  # when: manual
+
+d:destroy:
+  stage: destroy
+  before_script:
+    - !reference [.terraform_before_template]
+  environment:
+    name: env/$CI_COMMIT_REF_SLUG
+    action: stop
+  script:
+    - terraform destroy -auto-approve
+  artifacts:
+    paths:
+      - infra/${TF_ENV}/.terraform
+  after_script:
+    - !reference [.terraform_after_template]
+  dependencies:
+    - a:apply
+  when: manual
